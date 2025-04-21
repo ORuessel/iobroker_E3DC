@@ -1,39 +1,90 @@
-// Script my-pv Heizstab Version 1.0.2 
-// defintion which instances has to be used 
-const instanzE3DC_RSCP       = 'e3dc-rscp.0' 
-const instanzHeizstab_Modbus = 'modbus.1'
+// Konstanten Definitionen
+const CONFIG = {
+    INSTANCES: {
+        E3DC_RSCP: 'e3dc-rscp.0',
+        HEIZSTAB_MODBUS: 'modbus.1'
+    },
+    HEIZSTAB: {
+        DEBOUNCE_INTERVAL: 1000,
+        TEMPERATURE_BUFFER: 3,
+        MIN_POWER: 300,
+        SAFETY_BUFFER: 500,
+        MAX_POWER: 3000,
+        MIN_TEMP: 0,
+        MAX_TEMP: 100
+    }
+};
 
 // E3DC Komponenten Definition 
-const sID_PV_Leistung       = `${instanzE3DC_RSCP}.EMS.POWER_PV`; // PV power
-const sID_Netz_Leistung     = `${instanzE3DC_RSCP}.EMS.POWER_GRID`; // Grid power
-const sID_Wallbox_Leistung  = `modbus.1.inputRegisters.120_Leistung_aktuell`; // Wallbox power
-const sID_Batterie_Leistung = `${instanzE3DC_RSCP}.EMS.POWER_BAT`; // Battery power
-const sID_Power_Mode        = `${instanzE3DC_RSCP}.EMS.MODE`; // Power mode state
-const sID_Batterie_Status   = `${instanzE3DC_RSCP}.EMS.BAT_SOC`; // Battery status state
-const sID_Bat_Charge_Limit  = `${instanzE3DC_RSCP}.EMS.SYS_SPECS.maxBatChargePower`;// Batterie Ladelimit
+const E3DC_STATES = {
+    PV_POWER: `${CONFIG.INSTANCES.E3DC_RSCP}.EMS.POWER_PV`,
+    GRID_POWER: `${CONFIG.INSTANCES.E3DC_RSCP}.EMS.POWER_GRID`,
+    WALLBOX_POWER: `${CONFIG.INSTANCES.E3DC_RSCP}.EMS.POWER_WB_ALL`,
+    BATTERY_POWER: `${CONFIG.INSTANCES.E3DC_RSCP}.EMS.POWER_BAT`,
+    POWER_MODE: `${CONFIG.INSTANCES.E3DC_RSCP}.EMS.MODE`,
+    BATTERY_STATUS: `${CONFIG.INSTANCES.E3DC_RSCP}.EMS.BAT_SOC`,
+    BATTERY_CHARGE_LIMIT: `${CONFIG.INSTANCES.E3DC_RSCP}.EMS.SYS_SPECS.maxBatChargePower`
+};
 
-// selbst definierte Variablen
-const sID_Eigenverbrauch    = '0_userdata.0.Charge_Control.Allgemein.Hausverbrauch'; 					// Household consumption power
-const sID_M_Power_W         = '0_userdata.0.Charge_Control.Allgemein.Akt_Berechnete_Ladeleistung_W'; 	// Calculated required charging power
-const sID_LeistungLW_Pumpe_W = 'modbus.2.holdingRegisters.40104_Leistung_aller_WP';                     // Pfad zu den Leistungswerte Wärmepumpe eintragen ansonsten leer lassen
+// Heizstab Modbus Variablen 
+const HEIZSTAB_STATES = {
+    CURRENT_POWER: `${CONFIG.INSTANCES.HEIZSTAB_MODBUS}.holdingRegisters.1000_Power`,
+    TARGET_POWER: `${CONFIG.INSTANCES.HEIZSTAB_MODBUS}.holdingRegisters.1000_Power`,
+    CURRENT_TEMP: `${CONFIG.INSTANCES.HEIZSTAB_MODBUS}.holdingRegisters.1001_Temp1`,
+    MAX_TEMP: `${CONFIG.INSTANCES.HEIZSTAB_MODBUS}.holdingRegisters.1002_WW1_Temp_max`
+};
 
-// Heistab Modbus Variablen 
-const sID_LeistungHeizstab_W        = `${instanzHeizstab_Modbus}.holdingRegisters.1000_Power`; // Current power consumption of heating element in W
-const sID_Soll_LeistungHeizstab_W   = `${instanzHeizstab_Modbus}.holdingRegisters.1000_Power`; // Target heating element power
-const sID_IstTempHeizstab           = `${instanzHeizstab_Modbus}.holdingRegisters.1001_Temp1`; // Current temperature at the heating element
-const sID_MaxTempHeizstab           = `${instanzHeizstab_Modbus}.holdingRegisters.1002_WW1_Temp_max`; // Maximum temperature
+// Statistik States
+const STATISTICS_STATES = {
+    PREVIOUS_POWER: '0_userdata.0.Heizung.E3DC.previousHeizstabLeistung',
+    TOTAL_ENERGY: '0_userdata.0.Heizung.E3DC.Heizstab_Gesamtenergie',
+    LAST_UPDATE: '0_userdata.0.Heizung.E3DC.Heizstab_LetzteAktualisierung'
+};
 
-// Heistab states manuell zu erstellen für Statistikwerte
-const sID_previousHeizstabLeistung_W    = '0_userdata.0.Heizung.E3DC.previousHeizstabLeistung'; // Previous heating element load power
-const sID_Heizstab_Gesamtenergie        = '0_userdata.0.Heizung.E3DC.Heizstab_Gesamtenergie'; // Cumulative energy
-const sID_Heizstab_LetzteAktualisierung = '0_userdata.0.Heizung.E3DC.Heizstab_LetzteAktualisierung'; // Last update
+// Hilfsfunktionen
+function validateTemperature(temp) {
+    if (temp < CONFIG.HEIZSTAB.MIN_TEMP || temp > CONFIG.HEIZSTAB.MAX_TEMP) {
+        throw new Error(`Ungültige Temperatur: ${temp}°C`);
+    }
+    return temp;
+}
 
-// Defintion von Heizstabparametern und Sicherheitsmechanismen
-const debounceInterval          = 3000; // Minimum interval between updates in milliseconds
-const temperatureBuffer         = 3;    // Buffer in degrees Celsius to prevent frequent on/off cycling
-const minimumHeizstabLeistung   = 300;  // Minimum power for heating element
-const sicherheitspuffer         = 300;  // Safety buffer to avoid frequent switching
-const MaximalLeistungHeizstab_W = 3000; // Maximum power in watt of the heating element
+function validatePower(power, allowNegative = false) {
+    if (!allowNegative && power < 0) {
+        throw new Error(`Ungültige Leistung: ${power}W`);
+    }
+    return power;
+}
+
+async function calculateAvailablePower(states) {
+    const {
+        PV_Leistung_W,
+        Hausverbrauch_W,
+        M_Power_W,
+        Wallbox_Leistung_W
+    } = states;
+
+    let availablePower = PV_Leistung_W - Hausverbrauch_W - M_Power_W - Wallbox_Leistung_W - CONFIG.HEIZSTAB.SAFETY_BUFFER;
+    if (M_Power_W !== 0) {
+        availablePower -= CONFIG.HEIZSTAB.SAFETY_BUFFER;
+    }
+    return Math.max(availablePower, 0);
+}
+
+async function updateEnergyStatistics(currentPower, lastUpdate) {
+    const jetzt = Date.now();
+    const vergangeneZeitInStunden = (jetzt - (lastUpdate || 0)) / (1000 * 60 * 60);
+    const verbrauchteEnergie = (currentPower * vergangeneZeitInStunden) / 1000;
+    const aktuelleGesamtenergie = (await getStateAsync(STATISTICS_STATES.TOTAL_ENERGY)).val || 0;
+    const neueGesamtenergie = aktuelleGesamtenergie + verbrauchteEnergie;
+
+    await Promise.all([
+        setStateAsync(STATISTICS_STATES.TOTAL_ENERGY, neueGesamtenergie),
+        setStateAsync(STATISTICS_STATES.LAST_UPDATE, jetzt)
+    ]);
+
+    return neueGesamtenergie;
+}
 
 let debounceTimer;
 
@@ -41,97 +92,79 @@ async function fetchAndUpdateHeizstabLeistung() {
     try {
         // Zustände abfragen
         const states = await Promise.all([
-            getStateAsync(sID_Wallbox_Leistung),
-            getStateAsync(sID_Netz_Leistung),
-            getStateAsync(sID_LeistungHeizstab_W),
-            getStateAsync(sID_Eigenverbrauch),
-            getStateAsync(sID_M_Power_W),
-            getStateAsync(sID_Batterie_Leistung),
-            getStateAsync(sID_IstTempHeizstab),
-            getStateAsync(sID_MaxTempHeizstab),
-            getStateAsync(sID_PV_Leistung),
-            getStateAsync(sID_Soll_LeistungHeizstab_W),
-            getStateAsync(sID_Power_Mode),
-            getStateAsync(sID_Batterie_Status),
-            getStateAsync(sID_Bat_Charge_Limit),
-			sID_LeistungLW_Pumpe_W ? getStateAsync(sID_LeistungLW_Pumpe_W) : Promise.resolve({ val: 0 })
+            getStateAsync(E3DC_STATES.WALLBOX_POWER),
+            getStateAsync(E3DC_STATES.GRID_POWER),
+            getStateAsync(HEIZSTAB_STATES.CURRENT_POWER),
+            getStateAsync('0_userdata.0.Charge_Control.Allgemein.Hausverbrauch'),
+            getStateAsync('0_userdata.0.Charge_Control.Allgemein.Akt_Berechnete_Ladeleistung_W'),
+            getStateAsync(E3DC_STATES.BATTERY_POWER),
+            getStateAsync(HEIZSTAB_STATES.CURRENT_TEMP),
+            getStateAsync(HEIZSTAB_STATES.MAX_TEMP),
+            getStateAsync(E3DC_STATES.PV_POWER),
+            getStateAsync(HEIZSTAB_STATES.TARGET_POWER),
+            getStateAsync(E3DC_STATES.POWER_MODE),
+            getStateAsync(E3DC_STATES.BATTERY_STATUS),
+            getStateAsync(E3DC_STATES.BATTERY_CHARGE_LIMIT)
         ]);
 
-        const [
-            Wallbox_Leistung, Netz_Leistung, LeistungHeizstab, Eigenverbrauch, M_Power, Batterie_Leistung,
-            IstTempHeizstab, MaxTempHeizstab, PV_Leistung, SollLeistungHeizstab, 
-            Power_Mode, Batterie_Status, Bat_Charge_Limit, LeistungWP
-        ] = states;
+        // Validierung der Zustände
+        const stateNames = Object.keys(E3DC_STATES).concat(Object.keys(HEIZSTAB_STATES));
+        const invalidStates = states.map((state, index) => 
+            state === null || state === undefined ? stateNames[index] : null
+        ).filter(Boolean);
 
-        // Ensure all states are fetched correctly
-        const stateNames = [
-            'Wallbox_Leistung', 'Netz_Leistung', 'LeistungHeizstab', 'Eigenverbrauch', 'M_Power', 'Batterie_Leistung',
-            'IstTempHeizstab', 'MaxTempHeizstab', 'PV_Leistung', 'SollLeistungHeizstab',
-            'Power_Mode', 'Batterie_Status', 'Bat_Charge_Limit', 'LeistungWP'
-        ];
-
-        stateNames.forEach((name, index) => {
-            if (states[index] === null || states[index] === undefined) {
-                console.error(`State ${name} is null or undefined`);
-            }
-        });
-
-        if (states.some(state => state === null || state === undefined)) {
-            throw new Error('One or more states are null or undefined');
+        if (invalidStates.length > 0) {
+            throw new Error(`Ungültige Zustände: ${invalidStates.join(', ')}`);
         }
 
-        // Werte extrahieren
-        let [
-            Wallbox_Leistung_W, NetzLeistung_W, LeistungHeizstab_W, Hausverbrauch_W, M_Power_W, BatterieLeistung_W,
-            IstTemp, MaxTemp, PV_Leistung_W, SollLeistungHeizstab_W, 
-            PowerMode, BatterieStatus, Charge_Limit, LeistungWP_W
-        ] = states.map(state => state.val);
-
-        console.log(`Zustände abgefragt: Netz=${NetzLeistung_W}W, PV=${PV_Leistung_W}W, Hausverbrauch=${Hausverbrauch_W}W, LeistungHeizstab=${LeistungHeizstab_W}W, Batterie=${BatterieLeistung_W}W, IstTemp=${IstTemp}°C, MaxTemp=${MaxTemp}°C, SollLeistungHeizstab=${SollLeistungHeizstab_W}W, PowerMode=${PowerMode}, BatterieStatus=${BatterieStatus}, Charge_Limit=${Charge_Limit}, M_Power_W=${M_Power_W}W, LeistungWP = ${LeistungWP}W`);
+        // Werte extrahieren und validieren
+        const stateValues = {
+            Wallbox_Leistung_W: validatePower(states[0].val),
+            NetzLeistung_W: validatePower(states[1].val, true),
+            LeistungHeizstab_W: validatePower(states[2].val),
+            Hausverbrauch_W: validatePower(states[3].val),
+            M_Power_W: validatePower(states[4].val),
+            BatterieLeistung_W: validatePower(states[5].val, true),
+            IstTemp: validateTemperature(states[6].val),
+            MaxTemp: validateTemperature(states[7].val),
+            PV_Leistung_W: validatePower(states[8].val),
+            SollLeistungHeizstab_W: validatePower(states[9].val),
+            PowerMode: states[10].val,
+            BatterieStatus: states[11].val,
+            Charge_Limit: states[12].val
+        };
 
         // Bedingungen prüfen
-        if (PowerMode === 2) {
-            if (Charge_Limit === M_Power_W && NetzLeistung_W < -Math.abs(minimumHeizstabLeistung + 500)) {
-                M_Power_W = BatterieLeistung_W;
-            }
-        } else {
-            M_Power_W = 0;
+        if (stateValues.PowerMode === 2 && 
+            stateValues.Charge_Limit === stateValues.M_Power_W && 
+            stateValues.BatterieLeistung_W > 0) {
+            console.log('Power_Mode ist 2 und Batterie soll mit max. Leistung geladen werden. Heizstab wird nicht aktiviert.');
+            await setStateAsync(HEIZSTAB_STATES.TARGET_POWER, 0);
+            return;
         }
 
         // Verfügbaren Überschuss berechnen
-        let verfuegbarerUeberschuss_W = PV_Leistung_W - Hausverbrauch_W - M_Power_W- Wallbox_Leistung_W - LeistungWP_W - sicherheitspuffer; // Verfügbarer Überschuss unter Berücksichtigung von PV-Leistung, Hausverbrauch, Wärmepumpe, Soll-Ladeleistung und Sicherheitspuffer
-        verfuegbarerUeberschuss_W = Math.max(verfuegbarerUeberschuss_W, 0); // Stellen Sie sicher, dass der Wert nicht negativ wird
-
-        if (M_Power_W !== 0) {
-            verfuegbarerUeberschuss_W -= sicherheitspuffer;
-        }
+        const verfuegbarerUeberschuss_W = await calculateAvailablePower(stateValues);
 
         // Heizstab-Leistung bestimmen
         let HeizstabLadeleistung_W = 0;
-        if (IstTemp < MaxTemp - temperatureBuffer && verfuegbarerUeberschuss_W >= minimumHeizstabLeistung) { // Stellen Sie sicher, dass die Temperaturbedingung mit Puffer erfüllt ist und die Mindestleistung verfügbar ist
-            HeizstabLadeleistung_W = Math.min(verfuegbarerUeberschuss_W, MaximalLeistungHeizstab_W); // Begrenzen Sie auf 3000W oder verfügbare Energie
-        } else {
-            HeizstabLadeleistung_W = 0; // Heizstab ausschalten, wenn die Bedingungen nicht erfüllt sind
+        if (stateValues.IstTemp < stateValues.MaxTemp - CONFIG.HEIZSTAB.TEMPERATURE_BUFFER && 
+            verfuegbarerUeberschuss_W >= CONFIG.HEIZSTAB.MIN_POWER) {
+            HeizstabLadeleistung_W = Math.min(verfuegbarerUeberschuss_W, CONFIG.HEIZSTAB.MAX_POWER);
         }
-        await setStateAsync(sID_Soll_LeistungHeizstab_W, HeizstabLadeleistung_W);
 
-        // Aktualisiere den vorherigen Wert der Heizstabladeleistung
-        await setStateAsync(sID_previousHeizstabLeistung_W, HeizstabLadeleistung_W);
+        // Zustände aktualisieren
+        await Promise.all([
+            setStateAsync(HEIZSTAB_STATES.TARGET_POWER, HeizstabLadeleistung_W),
+            setStateAsync(STATISTICS_STATES.PREVIOUS_POWER, HeizstabLadeleistung_W)
+        ]);
 
-        // Kumulierte Energieberechnung, Aktualisierung und Logging
-        const jetzt = Date.now();
-        const letzteAktualisierung = await getStateAsync(sID_Heizstab_LetzteAktualisierung);
-        const vergangeneZeitInStunden = (jetzt - (letzteAktualisierung.val || 0)) / (1000 * 60 * 60);
-        const verbrauchteEnergie = (LeistungHeizstab_W * vergangeneZeitInStunden) / 1000; // In kWh umrechnen
-        const aktuelleGesamtenergie = (await getStateAsync(sID_Heizstab_Gesamtenergie)).val || 0;
-        const neueGesamtenergie = aktuelleGesamtenergie + verbrauchteEnergie;
+        // Energie-Statistiken aktualisieren
+        const letzteAktualisierung = (await getStateAsync(STATISTICS_STATES.LAST_UPDATE)).val;
+        await updateEnergyStatistics(stateValues.LeistungHeizstab_W, letzteAktualisierung);
 
-        await setStateAsync(sID_Heizstab_Gesamtenergie, neueGesamtenergie);
-        await setStateAsync(sID_Heizstab_LetzteAktualisierung, jetzt);
-
-        console.log(`Update: Netz=${NetzLeistung_W}W, PV=${PV_Leistung_W}W, Heizstab=${HeizstabLadeleistung_W}W, Überschuss=${verfuegbarerUeberschuss_W}W`);
+        console.log(`Update: Netz=${stateValues.NetzLeistung_W}W, PV=${stateValues.PV_Leistung_W}W, Wallbox=${stateValues.Wallbox_Leistung_W}W, Heizstab=${HeizstabLadeleistung_W}W, Überschuss=${verfuegbarerUeberschuss_W}W`);
     } catch (error) {
-        // @ts-ignore
         console.error('Fehler bei der Aktualisierung der Heizstab-Leistung:', error.message);
         console.error(error.stack);
     }
@@ -142,26 +175,26 @@ function debounceUpdate() {
     fetchAndUpdateHeizstabLeistung();
     debounceTimer = setTimeout(() => {
         debounceTimer = null;
-    }, debounceInterval);
+    }, CONFIG.HEIZSTAB.DEBOUNCE_INTERVAL);
 }
 
-// Register listeners for relevant state changes
-const ids = [
-    sID_Wallbox_Leistung,
-    sID_PV_Leistung,
-    sID_Netz_Leistung,
-    sID_Eigenverbrauch,
-    sID_Batterie_Leistung,
-    sID_LeistungHeizstab_W,
-    sID_M_Power_W,
-    sID_Power_Mode,
-    sID_Batterie_Status
+// Listener registrieren
+const stateIds = [
+    E3DC_STATES.WALLBOX_POWER,
+    E3DC_STATES.PV_POWER,
+    E3DC_STATES.GRID_POWER,
+    '0_userdata.0.Charge_Control.Allgemein.Hausverbrauch',
+    E3DC_STATES.BATTERY_POWER,
+    HEIZSTAB_STATES.CURRENT_POWER,
+    '0_userdata.0.Charge_Control.Allgemein.Akt_Berechnete_Ladeleistung_W',
+    E3DC_STATES.POWER_MODE,
+    E3DC_STATES.BATTERY_STATUS
 ];
 
-ids.forEach(id => {
+stateIds.forEach(id => {
     on({ id, change: "ne" }, debounceUpdate);
-    console.log(`Listener registered for ${id}`);
+    console.log(`Listener registriert für ${id}`);
 });
 
-// Initial call
+// Initialer Aufruf
 fetchAndUpdateHeizstabLeistung();
